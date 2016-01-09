@@ -10,32 +10,39 @@ import (
 const (
 	maxInt64         = (1<<63 - 1)
 	infiniteDuration = itime.Duration(maxInt64)
-	batch            = 1024
 )
 
 var (
-	globalTimer = NewTimer(4096)
+	globalTimer     = NewTimer(4096)
+	globalAfterPool = &sync.Pool{
+		New: func() interface{} {
+			return make(chan itime.Time, 1)
+		},
+	}
 )
 
 // After waits for the duration to elapse and then sends the current time
 // on the returned channel.
 func After(d itime.Duration) (now itime.Time) {
 	var (
-		c  = make(chan itime.Time, 1)
-		td = globalTimer.Start(d, func() {
-			// Non-blocking send of time on c.
-			// Used in NewTimer, it cannot block anyway (buffer).
-			// Used in NewTicker, dropping sends on the floor is
-			// the desired behavior when the reader gets behind,
-			// because the sends are periodic.
-			select {
-			case c <- itime.Now():
-			default:
-			}
-		})
+		c  chan itime.Time
+		td *TimerData
 	)
+	c = globalAfterPool.Get().(chan itime.Time)
+	td = globalTimer.Start(d, func() {
+		// Non-blocking send of time on c.
+		// Used in NewTimer, it cannot block anyway (buffer).
+		// Used in NewTicker, dropping sends on the floor is
+		// the desired behavior when the reader gets behind,
+		// because the sends are periodic.
+		select {
+		case c <- itime.Now():
+		default:
+		}
+	})
 	now = <-c
 	td.Stop()
+	globalAfterPool.Put(c)
 	return
 }
 
@@ -241,8 +248,8 @@ func (t *Timer) reset(td *TimerData, d itime.Duration) (ok bool) {
 // If addtimer inserts a new earlier event, addtimer1 wakes timerproc early.
 func (t *Timer) timerproc() {
 	var (
-		i   int
 		now int64
+		fn  func()
 		td  *TimerData
 		d   itime.Duration
 	)
@@ -261,25 +268,24 @@ func (t *Timer) timerproc() {
 			if d = itime.Duration(td.expire - now); d > 0 {
 				break
 			}
-			if td.fn == nil {
+			fn = td.fn
+			t.del(td)       // let caller put back
+			t.lock.Unlock() // fn maybe blocking, release lock
+			if fn == nil {
 				log.Printf("timer: expire timer no fn\n")
 			} else {
 				if debug {
 					log.Printf("timer: expire %s\n", td)
 				}
-				td.fn()
+				fn()
 			}
-			// let caller put back
-			t.del(td)
-			if i++; i >= batch {
-				break
-			}
+			t.lock.Lock()
 		}
 		t.signal.Reset(d)
+		t.lock.Unlock()
 		if debug {
 			log.Printf("timer: reset signal %d\n", d)
 		}
-		t.lock.Unlock()
 		<-t.signal.C
 	}
 	return
