@@ -1,85 +1,83 @@
 package time
 
 import (
-	log "code.google.com/p/log4go"
+	"fmt"
+	"log"
 	"sync"
 	itime "time"
 )
 
 const (
-	timerFormat      = "2006-01-02 15:04:05"
 	infiniteDuration = itime.Duration(1<<63 - 1)
-	timerBatchExpire = 1000
-)
-
-var (
-	timerLazyDelay = 300 * itime.Millisecond
+	batch            = 1024
 )
 
 type TimerData struct {
-	Key    string
-	expire itime.Time
-	fn     func()
+	fn     func() // must nonblock!!!
 	index  int
+	expire int64
 	next   *TimerData
 }
 
-func (td *TimerData) Delay() itime.Duration {
-	return td.expire.Sub(itime.Now())
-}
-
-func (td *TimerData) ExpireString() string {
-	return td.expire.Format(timerFormat)
+func (td *TimerData) String() string {
+	return fmt.Sprintf(`
+-------------
+index:  %d
+expire: %d
+fn:     %v
+next:   %v
+-------------
+`, td.index, td.expire, td.fn, td.next)
 }
 
 type Timer struct {
 	lock   sync.Mutex
+	signal *itime.Timer
 	free   *TimerData
 	timers []*TimerData
-	signal *itime.Timer
-	num    int
+	size   int
 }
 
-// A heap must be initialized before any of the heap operations
-// can be used. Init is idempotent with respect to the heap invariants
-// and may be called whenever the heap invariants may have been invalidated.
-// Its complexity is O(n) where n = h.Len().
-//
-func NewTimer(num int) (t *Timer) {
+// NewTimer new a timer.
+func NewTimer(size int) (t *Timer) {
 	t = new(Timer)
-	t.init(num)
+	t.init(size)
 	return t
 }
 
 // Init init the timer.
-func (t *Timer) Init(num int) {
-	t.init(num)
+func (t *Timer) Init(size int) {
+	t.init(size)
 }
 
-func (t *Timer) init(num int) {
-	t.signal = itime.NewTimer(infiniteDuration)
-	t.timers = make([]*TimerData, 0, num)
-	t.num = num
+// init init the timer.
+func (t *Timer) init(size int) {
+	t.signal = itime.NewTimer(infiniteDuration) // never send signal when init
+	t.timers = make([]*TimerData, 0, size)
+	t.size = size
 	t.grow()
 	go t.start()
 }
 
+// grow grow the freelist timerData.
+// free-> []timerData -> []timerData -> []timerData
 func (t *Timer) grow() {
 	var (
 		i   int
 		td  *TimerData
-		tds = make([]TimerData, t.num)
+		tds = make([]TimerData, t.size) // only one object, optimize GC
 	)
+	// use free list reuse object
 	t.free = &(tds[0])
 	td = t.free
-	for i = 1; i < t.num; i++ {
+	for i = 1; i < t.size; i++ {
 		td.next = &(tds[i])
 		td = td.next
 	}
 	return
 }
 
-// get get a free timer data.
+// get get a free timer data, if no free call the grow.
 func (t *Timer) get() (td *TimerData) {
 	if td = t.free; td == nil {
 		t.grow()
@@ -89,67 +87,66 @@ func (t *Timer) get() (td *TimerData) {
 	return
 }
 
-// put put back a timer data.
+// put put back a timer data to free list.
 func (t *Timer) put(td *TimerData) {
 	td.next = t.free
 	t.free = td
 }
 
-// Push pushes the element x onto the heap. The complexity is
-// O(log(n)) where n = h.Len().
-func (t *Timer) Add(expire itime.Duration, fn func()) (td *TimerData) {
+// Start start the timer, if expired then call fn, the returned TimerData must
+// Stop after expired or terminated.
+// fn MUST NOT BLOCK!!!!!!!!!!!!!!!
+func (t *Timer) Start(expire itime.Duration, fn func()) (td *TimerData) {
 	t.lock.Lock()
 	td = t.get()
-	td.expire = itime.Now().Add(expire)
+	td.expire = itime.Now().UnixNano() + int64(expire)
 	td.fn = fn
 	t.add(td)
 	t.lock.Unlock()
 	return
 }
 
-// Del removes the element at index i from the heap.
-// The complexity is O(log(n)) where n = h.Len().
-func (t *Timer) Del(td *TimerData) {
+// add add a timer data into timer.
+func (t *Timer) add(td *TimerData) {
+	var d itime.Duration
+	td.index = len(t.timers)
+	t.timers = append(t.timers, td) // add to the minheap last node
+	t.up(td.index)
+	if td.index == 0 {
+		// if first node, signal start goroutine
+		d = itime.Duration(td.expire - itime.Now().UnixNano())
+		t.signal.Reset(d)
+		if debug {
+			log.Printf("timer: reset signal %d\n", d)
+		}
+	}
+	if debug {
+		log.Printf("timer: add %s\n", td)
+	}
+	return
+}
+
+// Stop stop the timer data, returned the timer stoped or expired.
+func (t *Timer) Stop(td *TimerData) (ok bool) {
 	t.lock.Lock()
-	t.del(td)
+	ok = t.del(td)
 	t.put(td)
 	t.lock.Unlock()
 	return
 }
 
-// Push pushes the element x onto the heap. The complexity is
-// O(log(n)) where n = h.Len().
-func (t *Timer) add(td *TimerData) {
-	var d itime.Duration
-	td.index = len(t.timers)
-	// add to the minheap last node
-	t.timers = append(t.timers, td)
-	t.up(td.index)
-	if td.index == 0 {
-		// if first node, signal start goroutine
-		d = td.Delay()
-		t.signal.Reset(d)
-		if Debug {
-			log.Debug("timer: add reset delay %d ms", int64(d)/int64(itime.Millisecond))
-		}
-	}
-	if Debug {
-		log.Debug("timer: push item key: %s, expire: %s, index: %d", td.Key, td.ExpireString(), td.index)
-	}
-	return
-}
-
-func (t *Timer) del(td *TimerData) {
+// del del a timer data from timer.
+func (t *Timer) del(td *TimerData) bool {
 	var (
 		i    = td.index
 		last = len(t.timers) - 1
 	)
 	if i < 0 || i > last || t.timers[i] != td {
 		// already remove, usually by expire
-		if Debug {
-			log.Debug("timer del i: %d, last: %d, %p", i, last, td)
+		if debug {
+			log.Printf("timer: already del %s\n", td)
 		}
-		return
+		return false
 	}
 	if i != last {
 		t.swap(i, last)
@@ -159,17 +156,17 @@ func (t *Timer) del(td *TimerData) {
 	// remove item is the last node
 	t.timers[last].index = -1 // for safety
 	t.timers = t.timers[:last]
-	if Debug {
-		log.Debug("timer: remove item key: %s, expire: %s, index: %d", td.Key, td.ExpireString(), td.index)
+	if debug {
+		log.Printf("timer: del %s\n", td)
 	}
-	return
+	return true
 }
 
-// Set update timer data.
-func (t *Timer) Set(td *TimerData, expire itime.Duration) {
+// Reset reset the timer data with a new expire duration.
+func (t *Timer) Reset(td *TimerData, expire itime.Duration) (ok bool) {
 	t.lock.Lock()
-	t.del(td)
-	td.expire = itime.Now().Add(expire)
+	ok = t.del(td)
+	td.expire = itime.Now().UnixNano() + int64(expire)
 	t.add(td)
 	t.lock.Unlock()
 	return
@@ -196,36 +193,38 @@ func (t *Timer) expire() {
 	for {
 		if len(t.timers) == 0 {
 			d = infiniteDuration
-			if Debug {
-				log.Debug("timer: no other instance")
+			if debug {
+				log.Printf("timer: no other instance\n")
 			}
 			break
 		}
 		td = t.timers[0]
-		if d = td.Delay(); d > 0 {
+		if d = itime.Duration(td.expire - itime.Now().UnixNano()); d > 0 {
 			break
 		}
 		if td.fn == nil {
-			log.Warn("expire timer no fn")
+			log.Printf("timer: expire timer no fn\n")
 		} else {
-			if Debug {
-				log.Debug("timer key: %s, expire: %s, index: %d expired, call fn", td.Key, td.ExpireString(), td.index)
+			if debug {
+				log.Printf("timer: expire %s\n", td)
 			}
 			td.fn()
 		}
 		// let caller put back
 		t.del(td)
-		if i++; i >= timerBatchExpire {
+		if i++; i >= batch {
 			break
 		}
 	}
 	t.signal.Reset(d)
-	if Debug {
-		log.Debug("timer: expier reset delay %d ms", int64(d)/int64(itime.Millisecond))
+	if debug {
+		log.Printf("timer: reset signal %d\n", d)
 	}
 	t.lock.Unlock()
 	return
 }
+
+// minheap
 
 func (t *Timer) up(j int) {
 	for {
@@ -257,7 +256,7 @@ func (t *Timer) down(i, n int) {
 }
 
 func (t *Timer) less(i, j int) bool {
-	return t.timers[i].expire.Before(t.timers[j].expire)
+	return t.timers[i].expire < t.timers[j].expire
 }
 
 func (t *Timer) swap(i, j int) {

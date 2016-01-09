@@ -1,5 +1,5 @@
 package time
 
 const (
-	Debug = false
+	debug = false
 )
