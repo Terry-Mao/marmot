@@ -8,15 +8,61 @@ import (
 )
 
 const (
-	infiniteDuration = itime.Duration(1<<63 - 1)
+	maxInt64         = (1<<63 - 1)
+	infiniteDuration = itime.Duration(maxInt64)
 	batch            = 1024
 )
+
+var (
+	globalTimer = NewTimer(4096)
+)
+
+// After waits for the duration to elapse and then sends the current time
+// on the returned channel.
+func After(d itime.Duration) (now itime.Time) {
+	var (
+		c  = make(chan itime.Time, 1)
+		td = globalTimer.Start(d, func() {
+			// Non-blocking send of time on c.
+			// Used in NewTimer, it cannot block anyway (buffer).
+			// Used in NewTicker, dropping sends on the floor is
+			// the desired behavior when the reader gets behind,
+			// because the sends are periodic.
+			select {
+			case c <- itime.Now():
+			default:
+			}
+		})
+	)
+	now = <-c
+	td.Stop()
+	return
+}
+
+// AfterFunc waits for the duration to elapse and then calls f.
+// It returns a Timer that can be used to cancel the call using its Stop method.
+// f MUST NOT BLOCK!!!!!!!!
+func AfterFunc(d itime.Duration, f func()) (td *TimerData) {
+	td = globalTimer.Start(d, f)
+	return
+}
 
 type TimerData struct {
 	fn     func() // must nonblock!!!
 	index  int
 	expire int64
 	next   *TimerData
+	timer  *Timer
+}
+
+// Reset reset the timer data with a new duration.
+func (td *TimerData) Reset(d itime.Duration) bool {
+	return td.timer.reset(td, d)
+}
+
+// Stop stop the timer data, returned it stoped or expired.
+func (td *TimerData) Stop() bool {
+	return td.timer.stop(td)
 }
 
 func (td *TimerData) String() string {
@@ -24,10 +70,11 @@ func (td *TimerData) String() string {
 -------------
 index:  %d
 expire: %d
-fn:     %v
-next:   %v
+fn:     %p
+next:   %p
+timer:  %p
 -------------
-`, td.index, td.expire, td.fn, td.next)
+`, td.index, td.expire, td.fn, td.next, td.timer)
 }
 
 type Timer struct {
@@ -72,8 +119,10 @@ func (t *Timer) grow() {
 	td = t.free
 	for i = 1; i < t.size; i++ {
 		td.next = &(tds[i])
+		td.timer = t
 		td = td.next
 	}
+	td.timer = t
 	return
 }
 
@@ -93,13 +142,29 @@ func (t *Timer) put(td *TimerData) {
 	t.free = td
 }
 
+// when is a helper function for setting the 'when' field of a timer.
+// It returns what the time will be, in nanoseconds, Duration d in the future.
+// If d is negative, it is ignored.  If the returned value would be less than
+// zero because of an overflow, MaxInt64 is returned.
+func when(d itime.Duration) int64 {
+	if d <= 0 {
+		return itime.Now().UnixNano()
+	}
+	t := itime.Now().UnixNano() + int64(d)
+	if t < 0 {
+		t = maxInt64
+	}
+	return t
+}
+
 // Start start the timer, if expired then call fn, the returned TimerData must
 // Stop after expired or terminated.
 // fn MUST NOT BLOCK!!!!!!!!!!!!!!!
-func (t *Timer) Start(expire itime.Duration, fn func()) (td *TimerData) {
+func (t *Timer) Start(d itime.Duration, fn func()) (td *TimerData) {
+	expire := when(d)
 	t.lock.Lock()
 	td = t.get()
-	td.expire = itime.Now().UnixNano() + int64(expire)
+	td.expire = expire
 	td.fn = fn
 	t.add(td)
 	t.lock.Unlock()
@@ -126,8 +191,8 @@ func (t *Timer) add(td *TimerData) {
 	return
 }
 
-// Stop stop the timer data, returned the timer stoped or expired.
-func (t *Timer) Stop(td *TimerData) (ok bool) {
+// stop stop the timer data, returned the timer stoped or expired.
+func (t *Timer) stop(td *TimerData) (ok bool) {
 	t.lock.Lock()
 	ok = t.del(td)
 	t.put(td)
@@ -162,11 +227,12 @@ func (t *Timer) del(td *TimerData) bool {
 	return true
 }
 
-// Reset reset the timer data with a new expire duration.
-func (t *Timer) Reset(td *TimerData, expire itime.Duration) (ok bool) {
+// reset reset the timer data with a new expire duration.
+func (t *Timer) reset(td *TimerData, d itime.Duration) (ok bool) {
+	expire := when(d)
 	t.lock.Lock()
 	ok = t.del(td)
-	td.expire = itime.Now().UnixNano() + int64(expire)
+	td.expire = expire
 	t.add(td)
 	t.lock.Unlock()
 	return
