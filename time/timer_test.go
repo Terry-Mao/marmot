@@ -12,20 +12,19 @@ func TestTimer(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tds[i] = timer.Start(time.Duration(i)*time.Second+5*time.Minute, nil)
 	}
-	printTimer(timer)
+	//printTimer(timer)
 	for i := 0; i < 100; i++ {
-		log.Printf("td: %s\n", tds[i])
 		tds[i].Stop()
 	}
-	printTimer(timer)
+	//printTimer(timer)
 	for i := 0; i < 100; i++ {
 		tds[i] = timer.Start(time.Duration(i)*time.Second+5*time.Minute, nil)
 	}
-	printTimer(timer)
+	//printTimer(timer)
 	for i := 0; i < 100; i++ {
 		tds[i].Stop()
 	}
-	printTimer(timer)
+	//printTimer(timer)
 	timer.Start(time.Second, nil)
 	time.Sleep(time.Second * 2)
 	if len(timer.timers) != 0 {
@@ -57,6 +56,7 @@ func TestAfterFunc(t *testing.T) {
 	time.Sleep(time.Second * 2)
 	td.Stop()
 	if i != 1 {
+		t.Errorf("i: %d", i)
 		t.FailNow()
 	}
 }

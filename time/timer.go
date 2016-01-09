@@ -13,8 +13,8 @@ const (
 )
 
 var (
-	globalTimer     = NewTimer(4096)
-	globalAfterPool = &sync.Pool{
+	globalTimer = NewTimer(4096)
+	timePool    = &sync.Pool{
 		New: func() interface{} {
 			return make(chan itime.Time, 1)
 		},
@@ -28,7 +28,7 @@ func After(d itime.Duration) (now itime.Time) {
 		c  chan itime.Time
 		td *TimerData
 	)
-	c = globalAfterPool.Get().(chan itime.Time)
+	c = timePool.Get().(chan itime.Time)
 	td = globalTimer.Start(d, func() {
 		// Non-blocking send of time on c.
 		// Used in NewTimer, it cannot block anyway (buffer).
@@ -42,7 +42,7 @@ func After(d itime.Duration) (now itime.Time) {
 	})
 	now = <-c
 	td.Stop()
-	globalAfterPool.Put(c)
+	timePool.Put(c)
 	return
 }
 
@@ -58,6 +58,7 @@ type TimerData struct {
 	fn     func() // must nonblock!!!
 	index  int
 	expire int64
+	period int64
 	next   *TimerData
 	timer  *Timer
 }
@@ -170,7 +171,22 @@ func when(d itime.Duration) int64 {
 func (t *Timer) Start(d itime.Duration, fn func()) (td *TimerData) {
 	t.lock.Lock()
 	td = t.get()
+	td.period = 0
 	td.expire = when(d)
+	td.fn = fn
+	t.add(td)
+	t.lock.Unlock()
+	return
+}
+
+// StartPeriod start the timer, if expired then call fn, the returned TimerData
+// must Stop after expired or terminated.
+// fn MUST NOT BLOCK!!!!!!!!!!!!!!!
+func (t *Timer) StartPeriod(d itime.Duration, fn func()) (td *TimerData) {
+	t.lock.Lock()
+	td = t.get()
+	td.expire = when(d)
+	td.period = int64(d)
 	td.fn = fn
 	t.add(td)
 	t.lock.Unlock()
@@ -248,43 +264,50 @@ func (t *Timer) reset(td *TimerData, d itime.Duration) (ok bool) {
 // If addtimer inserts a new earlier event, addtimer1 wakes timerproc early.
 func (t *Timer) timerproc() {
 	var (
-		now int64
-		fn  func()
-		td  *TimerData
-		d   itime.Duration
+		now   int64
+		delta int64
+		fn    func()
+		td    *TimerData
 	)
 	for {
 		t.lock.Lock()
 		now = itime.Now().UnixNano()
 		for {
 			if len(t.timers) == 0 {
-				d = infiniteDuration
+				delta = maxInt64
 				if debug {
 					log.Printf("timer: no other instance\n")
 				}
 				break
 			}
 			td = t.timers[0]
-			if d = itime.Duration(td.expire - now); d > 0 {
+			if delta = td.expire - now; delta > 0 {
 				break
 			}
-			fn = td.fn
-			t.del(td)       // let caller put back
-			t.lock.Unlock() // fn maybe blocking, release lock
-			if fn == nil {
-				log.Printf("timer: expire timer no fn\n")
+			if td.period > 0 {
+				td.expire += td.period * (1 + -delta/td.period)
+				t.down(0, len(t.timers)-1)
 			} else {
+				t.del(td) // let caller put back
+			}
+			fn = td.fn
+			t.lock.Unlock() // fn maybe blocking, release lock
+			if fn != nil {
 				if debug {
 					log.Printf("timer: expire %s\n", td)
 				}
 				fn()
+			} else {
+				if debug {
+					log.Printf("timer: expire timer no fn\n")
+				}
 			}
 			t.lock.Lock()
 		}
-		t.signal.Reset(d)
+		t.signal.Reset(itime.Duration(delta))
 		t.lock.Unlock()
 		if debug {
-			log.Printf("timer: reset signal %d\n", d)
+			log.Printf("timer: reset signal %d\n", delta)
 		}
 		<-t.signal.C
 	}
