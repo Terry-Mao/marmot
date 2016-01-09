@@ -40,7 +40,7 @@ func After(d itime.Duration) (now itime.Time) {
 }
 
 // AfterFunc waits for the duration to elapse and then calls f.
-// It returns a Timer that can be used to cancel the call using its Stop method.
+// MUST call Stop after expired or terminated.
 // f MUST NOT BLOCK!!!!!!!!
 func AfterFunc(d itime.Duration, f func()) (td *TimerData) {
 	td = globalTimer.Start(d, f)
@@ -103,7 +103,7 @@ func (t *Timer) init(size int) {
 	t.timers = make([]*TimerData, 0, size)
 	t.size = size
 	t.grow()
-	go t.start()
+	go t.timerproc()
 }
 
 // grow grow the freelist timerData.
@@ -161,10 +161,9 @@ func when(d itime.Duration) int64 {
 // Stop after expired or terminated.
 // fn MUST NOT BLOCK!!!!!!!!!!!!!!!
 func (t *Timer) Start(d itime.Duration, fn func()) (td *TimerData) {
-	expire := when(d)
 	t.lock.Lock()
 	td = t.get()
-	td.expire = expire
+	td.expire = when(d)
 	td.fn = fn
 	t.add(td)
 	t.lock.Unlock()
@@ -229,64 +228,60 @@ func (t *Timer) del(td *TimerData) bool {
 
 // reset reset the timer data with a new expire duration.
 func (t *Timer) reset(td *TimerData, d itime.Duration) (ok bool) {
-	expire := when(d)
 	t.lock.Lock()
 	ok = t.del(td)
-	td.expire = expire
+	td.expire = when(d)
 	t.add(td)
 	t.lock.Unlock()
 	return
 }
 
-// start start the timer.
-func (t *Timer) start() {
+// timerproc runs the time-driven events.
+// It sleeps until the next event in the timers heap.
+// If addtimer inserts a new earlier event, addtimer1 wakes timerproc early.
+func (t *Timer) timerproc() {
+	var (
+		i   int
+		now int64
+		td  *TimerData
+		d   itime.Duration
+	)
 	for {
-		t.expire()
+		t.lock.Lock()
+		now = itime.Now().UnixNano()
+		for {
+			if len(t.timers) == 0 {
+				d = infiniteDuration
+				if debug {
+					log.Printf("timer: no other instance\n")
+				}
+				break
+			}
+			td = t.timers[0]
+			if d = itime.Duration(td.expire - now); d > 0 {
+				break
+			}
+			if td.fn == nil {
+				log.Printf("timer: expire timer no fn\n")
+			} else {
+				if debug {
+					log.Printf("timer: expire %s\n", td)
+				}
+				td.fn()
+			}
+			// let caller put back
+			t.del(td)
+			if i++; i >= batch {
+				break
+			}
+		}
+		t.signal.Reset(d)
+		if debug {
+			log.Printf("timer: reset signal %d\n", d)
+		}
+		t.lock.Unlock()
 		<-t.signal.C
 	}
-}
-
-// expire removes the minimum element (according to Less) from the heap.
-// The complexity is O(log(n)) where n = max.
-// It is equivalent to Del(0).
-func (t *Timer) expire() {
-	var (
-		i  int
-		td *TimerData
-		d  itime.Duration
-	)
-	t.lock.Lock()
-	for {
-		if len(t.timers) == 0 {
-			d = infiniteDuration
-			if debug {
-				log.Printf("timer: no other instance\n")
-			}
-			break
-		}
-		td = t.timers[0]
-		if d = itime.Duration(td.expire - itime.Now().UnixNano()); d > 0 {
-			break
-		}
-		if td.fn == nil {
-			log.Printf("timer: expire timer no fn\n")
-		} else {
-			if debug {
-				log.Printf("timer: expire %s\n", td)
-			}
-			td.fn()
-		}
-		// let caller put back
-		t.del(td)
-		if i++; i >= batch {
-			break
-		}
-	}
-	t.signal.Reset(d)
-	if debug {
-		log.Printf("timer: reset signal %d\n", d)
-	}
-	t.lock.Unlock()
 	return
 }
 
