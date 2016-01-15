@@ -131,6 +131,7 @@ func (t *Timer) grow() {
 		td = td.next
 	}
 	td.timer = t
+	td.next = nil
 	return
 }
 
