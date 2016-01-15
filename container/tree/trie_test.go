@@ -6,24 +6,24 @@ import (
 
 func TestTrie(t *testing.T) {
 	tr := NewTrie()
-	tr.Insert([]rune("我和你"))
-	if tr.Has([]rune("我")) {
+	tr.Insert("我和你")
+	if tr.Has("我") {
 		t.Error("not found 我")
 		t.FailNow()
 	}
-	if tr.Has([]rune("我和")) {
+	if tr.Has("我和") {
 		t.Error("not found 我和")
 		t.FailNow()
 	}
-	if !tr.Has([]rune("我和你")) {
+	if !tr.Has("我和你") {
 		t.Error("not found 我和你")
 		t.FailNow()
 	}
-	if tr.Has([]rune("和你")) {
+	if tr.Has("和你") {
 		t.Error("found 我和你")
 		t.FailNow()
 	}
-	if !tr.HasPrefix([]rune("我")) {
+	if !tr.HasPrefix("我") {
 		t.Error("not found 我")
 		t.FailNow()
 	}

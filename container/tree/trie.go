@@ -4,18 +4,28 @@ import (
 	"log"
 )
 
+// Trie Tree
 type Trie struct {
 	next map[rune]*Trie
 	end  bool
 }
 
+// NewTrie new a Trie Tree.
 func NewTrie() *Trie {
 	return &Trie{
 		next: make(map[rune]*Trie),
 	}
 }
 
-func (t *Trie) Insert(strs []rune) {
+// Insert insert word into trie tree.
+func (t *Trie) Insert(vs ...string) {
+	var i int
+	for i = 0; i < len(vs); i++ {
+		t.insert([]rune(vs[i]))
+	}
+}
+
+func (t *Trie) insert(strs []rune) {
 	var (
 		n      *Trie
 		ok     bool
@@ -32,7 +42,7 @@ func (t *Trie) Insert(strs []rune) {
 			n = NewTrie()
 			t.next[str] = n
 			if debug {
-				log.Printf("trie: insert new trie\n")
+				log.Printf("trie: insert new trie: %s\n", string(str))
 			}
 		}
 		t = n
@@ -40,12 +50,14 @@ func (t *Trie) Insert(strs []rune) {
 	n.end = true
 }
 
-func (t *Trie) Has(strs []rune) bool {
-	return t.has(strs, true)
+// Has tests whether the string s exists in trie tree.
+func (t *Trie) Has(s string) bool {
+	return t.has([]rune(s), true)
 }
 
-func (t *Trie) HasPrefix(strs []rune) bool {
-	return t.has(strs, false)
+// HasPrefix tests whether the string s's prefix in trie tree.
+func (t *Trie) HasPrefix(s string) bool {
+	return t.has([]rune(s), false)
 }
 
 func (t *Trie) has(strs []rune, all bool) bool {

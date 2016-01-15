@@ -1,5 +1,5 @@
 package tree
 
 var (
-	debug = true
+	debug = false
 )

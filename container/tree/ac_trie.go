@@ -4,53 +4,92 @@ import (
 	"log"
 )
 
+// Aho Corasick Trie Tree
 type ACTrie struct {
 	next   map[rune]*ACTrie
 	fail   *ACTrie
 	length int
 }
 
+// NewACTrie new a Aho Corasick Trie Tree.
 func NewACTrie() *ACTrie {
 	return &ACTrie{
 		next: make(map[rune]*ACTrie),
 	}
 }
 
+// Insert insert words into ac trie tree, after Insert must call SetFail to
+// build the fail table.
+func (t *ACTrie) Insert(vs ...string) {
+	var i int
+	for i = 0; i < len(vs); i++ {
+		t.insert([]rune(vs[i]))
+	}
+}
+
+func (t *ACTrie) insert(strs []rune) {
+	var (
+		i      int
+		ok     bool
+		str    rune
+		c      *ACTrie
+		p      = t
+		strLen = len(strs)
+	)
+	if debug {
+		log.Printf("actrie: insert strs len: %d\n", strLen)
+	}
+	for i = 0; i < strLen; i++ {
+		str = strs[i]
+		if c, ok = p.next[str]; !ok {
+			c = NewACTrie()
+			p.next[str] = c
+			if debug {
+				log.Printf("actrie: insert new trie: %s\n", string(str))
+			}
+		}
+		p = c
+	}
+	c.length = strLen
+}
+
+// SetFail build the fail table, must call after insert a word.
 func (t *ACTrie) SetFail() {
 	var (
+		i       int
 		ok      bool
 		str     rune
-		move    int
-		c, f, r *ACTrie
-		queue   = []*ACTrie{t}
+		p, c, f *ACTrie
+		queue   = []*ACTrie{t} // first node root
 	)
 	t.fail = nil
-	for move = 0; move < len(queue); move++ {
-		t = queue[move]             // bfs
-		for str, c = range t.next { // get child node
-			f = t.fail // parent fail
+	for i = 0; i < len(queue); i++ {
+		p = queue[i]                // bfs
+		for str, c = range p.next { // get child node
+			f = p.fail // parent fail
 			for {
 				if f == nil {
-					r = t // set root
+					c.fail = t // set root
 					break
 				}
-				if r, ok = f.next[str]; ok {
+				if c.fail, ok = f.next[str]; ok {
 					break
 				}
 				f = f.fail
 			}
-			c.fail = r
 			queue = append(queue, c)
 		}
 	}
 }
 
+// QueryFunc returns the index into strs of the every word point satisfying
+// f(start, end).
 func (t *ACTrie) QueryFunc(strs []rune, f func(int, int)) {
 	var (
 		ok      bool
 		i, s, e int
-		r, p    *ACTrie
 		str     rune
+		r, p    *ACTrie
 		n       = t
 	)
 	for i, str = range strs {
@@ -76,29 +115,4 @@ func (t *ACTrie) QueryFunc(strs []rune, f func(int, int)) {
 			}
 		}
 	}
-}
-
-func (t *ACTrie) Insert(strs []rune) {
-	var (
-		n      *ACTrie
-		ok     bool
-		str    rune
-		i      = 0
-		strLen = len(strs)
-	)
-	if debug {
-		log.Printf("actrie: insert strs len: %d\n", strLen)
-	}
-	for i = 0; i < strLen; i++ {
-		str = strs[i]
-		if n, ok = t.next[str]; !ok {
-			n = NewACTrie()
-			t.next[str] = n
-			if debug {
-				log.Printf("actrie: insert new trie\n")
-			}
-		}
-		t = n
-	}
-	n.length = strLen
 }
