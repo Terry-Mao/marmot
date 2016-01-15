@@ -16,7 +16,7 @@ func NewACTrie() *ACTrie {
 	}
 }
 
-func (t *ACTrie) initFail() {
+func (t *ACTrie) SetFail() {
 	var (
 		ok      bool
 		str     rune
