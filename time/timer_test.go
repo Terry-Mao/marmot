@@ -1,10 +1,37 @@
 package time
 
 import (
-	"log"
 	"testing"
 	"time"
 )
+
+func TestTimerFreeList(t *testing.T) {
+	// get, put, grow
+	timer := new(Timer)
+	timer.size = 1
+	td := timer.get()
+	if td == nil {
+		t.FailNow()
+	}
+	if timer.free != nil {
+		t.FailNow()
+	}
+	td1 := timer.get()
+	if td1 == nil {
+		t.FailNow()
+	}
+	timer.put(td)
+	if timer.free != td {
+		t.FailNow()
+	}
+	timer.put(td1)
+	if timer.free != td1 {
+		t.FailNow()
+	}
+	if td1.next != td {
+		t.FailNow()
+	}
+}
 
 func TestTimer(t *testing.T) {
 	timer := NewTimer(100)
@@ -12,32 +39,39 @@ func TestTimer(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		tds[i] = timer.Start(time.Duration(i)*time.Second+5*time.Minute, nil)
 	}
-	//printTimer(timer)
 	for i := 0; i < 100; i++ {
 		tds[i].Stop()
 	}
-	//printTimer(timer)
 	for i := 0; i < 100; i++ {
 		tds[i] = timer.Start(time.Duration(i)*time.Second+5*time.Minute, nil)
 	}
-	//printTimer(timer)
 	for i := 0; i < 100; i++ {
 		tds[i].Stop()
 	}
-	//printTimer(timer)
+	// Start
 	timer.Start(time.Second, nil)
 	time.Sleep(time.Second * 2)
 	if len(timer.timers) != 0 {
 		t.FailNow()
 	}
-}
-
-func printTimer(timer *Timer) {
-	log.Printf("----------timers: %d ----------\n", len(timer.timers))
-	for i := 0; i < len(timer.timers); i++ {
-		log.Printf("td: %s\n", timer.timers[i])
+	i := 0
+	timer.Start(time.Second, func() {
+		i++
+	})
+	timer.Start(time.Millisecond*500, func() {
+		i++
+	})
+	time.Sleep(time.Millisecond * 510)
+	if i != 1 {
+		t.Errorf("i: %d", i)
+		t.FailNow()
 	}
-	log.Printf("--------------------\n")
+	time.Sleep(time.Millisecond * 510)
+	if i != 2 {
+		t.Errorf("i: %d", i)
+		t.FailNow()
+	}
+	// StartPeriod
 }
 
 func TestAfter(t *testing.T) {
