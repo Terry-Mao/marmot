@@ -147,6 +147,7 @@ func (t *Timer) get() (td *TimerData) {
 
 // put put back a timer data to free list.
 func (t *Timer) put(td *TimerData) {
+	td.fn = nil
 	td.next = t.free
 	t.free = td
 }
